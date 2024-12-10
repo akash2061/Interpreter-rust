@@ -1,196 +1,165 @@
-use std::fmt::Display;
+use std::{fmt, rc::Rc};
 
 #[derive(Debug, PartialEq, Clone)]
-#[allow(non_camel_case_types)]
 pub enum TokenType {
-    LEFT_PAREN,
-    RIGHT_PAREN,
-    LEFT_BRACE,
-    RIGHT_BRACE,
+    // Single character tokens.
+    LeftParen,
+    RightParen,
+    LeftBrace,
+    RightBrace,
 
-    COMMA,
-    DOT,
-    MINUS,
-    PLUS,
-    SEMICOLON,
-    SLASH,
-    STAR,
+    Comma,
+    Dot,
+    Minus,
+    Plus,
+    Semicolon,
+    Slash,
+    Star,
 
-    EQUAL,
-    EQUAL_EQUAL,
-    BANG,
-    BANG_EQUAL,
-    LESS,
-    LESS_EQUAL,
-    GREATER,
-    GREATER_EQUAL,
+    // One or two character tokens.
+    Bang,
+    BangEqual,
+    Equal,
+    EqualEqual,
+    Greater,
+    GreaterEqual,
+    Less,
+    LessEqual,
 
-    IDENTIFIER,
-    STRING,
-    NUMBER,
+    // Literals.
+    Identifier,
+    String,
+    Number,
 
-    AND,
-    CLASS,
-    ELSE,
-    FALSE,
-    FOR,
-    FUN,
-    IF,
-    NIL,
-    OR,
-    PRINT,
-    RETURN,
-    SUPER,
-    THIS,
-    TRUE,
-    VAR,
-    WHILE,
+    // Keywords.
+    And,
+    Class,
+    Else,
+    False,
+    Fun,
+    For,
+    If,
+    Nil,
+    Or,
+    Print,
+    Return,
+    Super,
+    This,
+    True,
+    Var,
+    While,
 
-    EOF,
+    // Other.
+    Eof,
 }
 
-impl TokenType {
-    pub fn get_token_type(identifier: &str) -> Self {
-        match identifier {
-            "and" => Self::AND,
-            "class" => Self::CLASS,
-            "else" => Self::ELSE,
-            "false" => Self::FALSE,
-            "for" => Self::FOR,
-            "fun" => Self::FUN,
-            "if" => Self::IF,
-            "nil" => Self::NIL,
-            "or" => Self::OR,
-            "print" => Self::PRINT,
-            "return" => Self::RETURN,
-            "super" => Self::SUPER,
-            "this" => Self::THIS,
-            "true" => Self::TRUE,
-            "var" => Self::VAR,
-            "while" => Self::WHILE,
-            _ => Self::IDENTIFIER,
+impl fmt::Display for TokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TokenType::LeftParen => write!(f, "LEFT_PAREN"),
+            TokenType::RightParen => write!(f, "RIGHT_PAREN"),
+            TokenType::LeftBrace => write!(f, "LEFT_BRACE"),
+            TokenType::RightBrace => write!(f, "RIGHT_BRACE"),
+            TokenType::Comma => write!(f, "COMMA"),
+            TokenType::Dot => write!(f, "DOT"),
+            TokenType::Minus => write!(f, "MINUS"),
+            TokenType::Plus => write!(f, "PLUS"),
+            TokenType::Semicolon => write!(f, "SEMICOLON"),
+            TokenType::Slash => write!(f, "SLASH"),
+            TokenType::Star => write!(f, "STAR"),
+            TokenType::Bang => write!(f, "BANG"),
+            TokenType::BangEqual => write!(f, "BANG_EQUAL"),
+            TokenType::Equal => write!(f, "EQUAL"),
+            TokenType::EqualEqual => write!(f, "EQUAL_EQUAL"),
+            TokenType::Greater => write!(f, "GREATER"),
+            TokenType::GreaterEqual => write!(f, "GREATER_EQUAL"),
+            TokenType::Less => write!(f, "LESS"),
+            TokenType::LessEqual => write!(f, "LESS_EQUAL"),
+            TokenType::Identifier => write!(f, "IDENTIFIER"),
+            TokenType::String => write!(f, "STRING"),
+            TokenType::Number => write!(f, "NUMBER"),
+            TokenType::And => write!(f, "AND"),
+            TokenType::Class => write!(f, "CLASS"),
+            TokenType::Else => write!(f, "ELSE"),
+            TokenType::False => write!(f, "FALSE"),
+            TokenType::Fun => write!(f, "FUN"),
+            TokenType::For => write!(f, "FOR"),
+            TokenType::If => write!(f, "IF"),
+            TokenType::Nil => write!(f, "NIL"),
+            TokenType::Or => write!(f, "OR"),
+            TokenType::Print => write!(f, "PRINT"),
+            TokenType::Return => write!(f, "RETURN"),
+            TokenType::Super => write!(f, "SUPER"),
+            TokenType::This => write!(f, "THIS"),
+            TokenType::True => write!(f, "TRUE"),
+            TokenType::Var => write!(f, "VAR"),
+            TokenType::While => write!(f, "WHILE"),
+            TokenType::Eof => write!(f, "EOF"),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Token {
     pub token_type: TokenType,
-    pub lexeme: String,
     pub literal: Option<Literal>,
-    pub line_num: usize,
+    pub lexeme: String,
+    pub line: usize,
 }
 
-impl Display for Token {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Token {
+    pub fn new(
+        token_type: TokenType,
+        lexeme: String,
+        literal: Option<Literal>,
+        line: usize,
+    ) -> Self {
+        Token {
+            token_type,
+            literal,
+            lexeme,
+            line,
+        }
+    }
+}
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.literal {
-            Some(value) => write!(f, "{:?} {} {value}", self.token_type, self.lexeme),
-            None => write!(f, "{:?} {} null", self.token_type, self.lexeme),
+            Some(value) => write!(f, "{} {} {value}", self.token_type, self.lexeme),
+            None => write!(f, "{} {} null", self.token_type, self.lexeme),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Literal {
-    Boolean(bool),
-    String(String),
-    Number(f64),
     Nil,
+    Boolean(bool),
+    String(Rc<String>),
+    Number(f64),
 }
 
-impl Literal {
-    pub fn is_truthy(&self) -> bool {
+impl fmt::Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Literal::Boolean(b) => *b,
-            Literal::Nil => false,
-            _ => true,
-        }
-    }
-}
-
-impl Display for Literal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Literal::Boolean(b) => write!(f, "{b}"),
-            Literal::String(s) => write!(f, "{s}"),
-            Literal::Number(n) => {
-                let int = n.trunc();
-                if int == *n {
-                    write!(f, "{int}.0")
+            Literal::Nil => write!(f, "nil"),
+            Literal::Boolean(value) => {
+                if *value {
+                    write!(f, "true")
                 } else {
-                    write!(f, "{n}")
+                    write!(f, "false")
                 }
             }
-            Literal::Nil => write!(f, "nil"),
+            Literal::String(value) => write!(f, "{value}"),
+            Literal::Number(value) => {
+                let int = *value as i64;
+                if value.fract() == 0.0 {
+                    write!(f, "{int}.0")
+                } else {
+                    write!(f, "{value}")
+                }
+            }
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum Expression {
-    Assign {
-        name: Token,
-        value: Box<Expression>,
-    },
-    Binary {
-        left: Box<Expression>,
-        op: Token,
-        right: Box<Expression>,
-    },
-    Group(Box<Expression>),
-    Literal(Literal),
-    Logical {
-        left: Box<Expression>,
-        op: Token,
-        right: Box<Expression>,
-    },
-    Unary {
-        op: Token,
-        right: Box<Expression>,
-    },
-    Variable(Token),
-}
-
-impl Display for Expression {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Expression::Assign { name, value } => {
-                write!(f, "(assign {} {})", name.lexeme, value)
-            }
-            Expression::Binary { left, op, right } => {
-                write!(f, "({} {} {})", op.lexeme, left, right)
-            }
-            Expression::Group(g) => {
-                write!(f, "(group {g})")
-            }
-            Expression::Literal(l) => write!(f, "{l}"),
-            Expression::Logical { left, op, right } => {
-                write!(f, "({} {} {})", op.lexeme, left, right)
-            }
-            Expression::Unary { op, right } => {
-                write!(f, "({} {})", op.lexeme, right)
-            }
-            Expression::Variable(name) => write!(f, "(var {})", name.lexeme),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Statement {
-    Block(Vec<Statement>),
-    Expression(Expression),
-    If {
-        condition: Expression,
-        then_branch: Box<Statement>,
-        else_branch: Option<Box<Statement>>,
-    },
-    Print(Expression),
-    Variable {
-        name: Token,
-        init: Option<Expression>,
-    },
-    While {
-        condition: Expression,
-        body: Box<Statement>,
-    },
 }

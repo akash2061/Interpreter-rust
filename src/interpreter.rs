@@ -1,227 +1,357 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, rc::Rc};
 
-use crate::grammar::*;
+use crate::{native, Environment, Expression, LoxFunction, Statement, Token, TokenType, Value};
 
-pub struct Environment {
-    scopes: Vec<HashMap<String, Literal>>,
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct InterpreterError {
+    pub token: Option<Token>,
+    pub message: String,
 }
 
-impl Environment {
-    fn new() -> Self {
-        Environment {
-            scopes: vec![HashMap::new()],
-        }
-    }
+pub type ExecuteInterpreterResult = Result<Option<Value>, InterpreterError>;
+pub type EvaluateInterpreterResult = Result<Value, InterpreterError>;
 
-    fn declare(&mut self, name: String, value: Literal) {
-        self.scopes.last_mut().unwrap().insert(name, value);
-    }
-
-    fn get(&self, name: &String) -> Option<Literal> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(val) = scope.get(name) {
-                return Some(val.clone());
-            }
-        }
-        None
-    }
-
-    fn set(&mut self, name: &String, val: &Literal) -> bool {
-        for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.insert(name.clone(), val.clone());
-                return true;
-            }
-        }
-        false
-    }
-
-    fn push(&mut self) {
-        self.scopes.push(HashMap::new());
-    }
-
-    fn pop(&mut self) {
-        self.scopes.pop();
-    }
-}
-
+#[derive(Debug)]
 pub struct Interpreter {
-    environment: Environment,
+    pub globals: Environment,
+    pub environment: Environment,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
+        let mut environment = Environment::new();
+
+        environment.define(
+            "clock".into(),
+            Value::Function(Rc::new(RefCell::new(native::ClockFunction {}))),
+        );
+
         Interpreter {
-            environment: Environment::new(),
+            globals: environment.clone(),
+            environment,
         }
     }
 
-    pub fn interpret(&mut self, statements: Vec<Statement>) -> Result<(), &'static str> {
-        for statement in statements.iter() {
+    pub fn interpret(&mut self, statements: Vec<Statement>) -> ExecuteInterpreterResult {
+        for statement in statements {
             self.execute(statement)?;
         }
-        Ok(())
+
+        Ok(None)
     }
 
-    fn execute(&mut self, statement: &Statement) -> Result<(), &'static str> {
+    pub fn execute(&mut self, statement: Statement) -> ExecuteInterpreterResult {
         match statement {
-            Statement::Block(statements) => {
-                self.execute_block(statements)?;
-            }
+            Statement::Expression(expression) => {
+                self.evaluate(expression)?;
 
-            Statement::Expression(expr) => {
-                self.evaluate(expr)?;
+                Ok(None)
+            }
+            Statement::Function {
+                name,
+                parameters,
+                body,
+            } => {
+                let function = LoxFunction {
+                    name,
+                    parameters,
+                    body,
+                    closure: self.environment.clone(),
+                };
+
+                self.environment.define(
+                    function.get_name().into(),
+                    Value::Function(Rc::new(RefCell::new(function))),
+                );
+
+                Ok(None)
             }
             Statement::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                if self.evaluate(condition)?.is_truthy() {
-                    self.execute(then_branch)?;
-                } else if let Some(else_branch) = else_branch {
-                    self.execute(else_branch)?;
+                let result = self.evaluate(condition)?;
+
+                if self.is_truthy(result) {
+                    Ok(self.execute(*then_branch)?)
+                } else if let Some(statement) = else_branch {
+                    Ok(self.execute(*statement)?)
+                } else {
+                    Ok(None)
                 }
             }
-            Statement::Print(expr) => match self.evaluate(expr)? {
-                Literal::Number(n) => println!("{}", n),
-                val => println!("{}", val),
-            },
-            Statement::Variable { name, init } => {
-                let value = match init {
-                    Some(expr) => self.evaluate(expr)?,
-                    None => Literal::Nil,
-                };
-                self.environment.declare(name.lexeme.clone(), value);
+            Statement::Print(expression) => {
+                match self.evaluate(expression)? {
+                    Value::Number(value) => println!("{value}"),
+                    value => println!("{value}"),
+                }
+
+                Ok(None)
+            }
+            Statement::Variable { name, initializer } => {
+                let mut value = Value::Nil;
+                if let Some(expression) = initializer {
+                    value = self.evaluate(expression)?;
+                }
+
+                self.environment.define(name.lexeme, value);
+
+                Ok(None)
+            }
+            Statement::Return { keyword: _, value } => {
+                if let Some(expression) = value {
+                    return Ok(Some(self.evaluate(expression)?));
+                }
+
+                Ok(Some(Value::Nil))
             }
             Statement::While { condition, body } => {
-                while self.evaluate(condition)?.is_truthy() {
-                    self.execute(body)?;
+                loop {
+                    let is_true = self.evaluate(condition.clone())?;
+
+                    if !self.is_truthy(is_true) {
+                        break;
+                    }
+
+                    if let Some(returned) = self.execute(*body.clone())? {
+                        return Ok(Some(returned));
+                    }
                 }
+
+                Ok(None)
+            }
+            Statement::Block(statements) => {
+                Ok(self.execute_block(statements, self.environment.enclose())?)
             }
         }
-        Ok(())
     }
 
-    pub fn evaluate(&mut self, expr: &Expression) -> Result<Literal, &'static str> {
-        let literal = match expr {
-            Expression::Assign { name, value } => {
-                let value = self.evaluate(value)?;
-                self.assign_variable(name, &value)?;
-                value
+    pub fn execute_block(
+        &mut self,
+        statements: Vec<Statement>,
+        environment: Environment,
+    ) -> ExecuteInterpreterResult {
+        let previous = self.environment.clone();
+        self.environment = environment;
+
+        for statement in statements {
+            match self.execute(statement) {
+                Err(error) => {
+                    self.environment = previous;
+                    return Err(error);
+                }
+                Ok(Some(value)) => {
+                    self.environment = previous;
+                    return Ok(Some(value));
+                }
+                Ok(None) => {}
             }
-            Expression::Binary { left, op, right } => {
-                let left = self.evaluate(left)?;
-                let right = self.evaluate(right)?;
-                match op.token_type {
-                    TokenType::STAR => match (left, right) {
-                        (Literal::Number(l), Literal::Number(r)) => Literal::Number(l * r),
-                        _ => return Err("Operands must be numbers."),
-                    },
-                    TokenType::SLASH => match (left, right) {
-                        (Literal::Number(l), Literal::Number(r)) => Literal::Number(l / r),
-                        _ => return Err("Operands must be numbers."),
-                    },
-                    TokenType::PLUS => match (left, right) {
-                        (Literal::Number(l), Literal::Number(r)) => Literal::Number(l + r),
-                        (Literal::String(l), Literal::String(r)) => {
-                            Literal::String(format!("{}{}", l, r))
-                        }
-                        _ => return Err("Operands must be two numbers or two strings."),
-                    },
-                    TokenType::MINUS => match (left, right) {
-                        (Literal::Number(l), Literal::Number(r)) => Literal::Number(l - r),
-                        _ => return Err("Operands must be numbers."),
-                    },
-                    TokenType::LESS
-                    | TokenType::LESS_EQUAL
-                    | TokenType::GREATER
-                    | TokenType::GREATER_EQUAL => match (left, right) {
-                        (Literal::Number(l), Literal::Number(r)) => {
-                            Literal::Boolean(compare_number(&op.token_type, l, r))
-                        }
-                        _ => return Err("Operands must be numbers."),
-                    },
-                    TokenType::EQUAL_EQUAL => Literal::Boolean(left == right),
-                    TokenType::BANG_EQUAL => Literal::Boolean(left != right),
-                    _ => todo!(),
+        }
+
+        self.environment = previous;
+        Ok(None)
+    }
+
+    pub fn evaluate(&mut self, expression: Expression) -> EvaluateInterpreterResult {
+        match expression {
+            Expression::Literal(literal) => Ok(literal.into()),
+            Expression::Grouping(child) => self.evaluate(*child),
+            Expression::Unary { operator, right } => {
+                let right_child = self.evaluate(*right)?;
+
+                match operator.token_type {
+                    TokenType::Bang => Ok(Value::Boolean(!self.is_truthy(right_child))),
+                    TokenType::Minus => Ok(Value::Number(
+                        -self.check_number_operand(&operator, &right_child)?,
+                    )),
+                    _ => panic!("unreachable"),
                 }
             }
-            Expression::Group(expr) => self.evaluate(expr)?,
-            Expression::Literal(l) => l.clone(),
-            Expression::Logical { left, op, right } => {
-                let left = self.evaluate(left)?;
-                let left_truthy = left.is_truthy();
-                let eval_right = match op.token_type {
-                    TokenType::OR => !left_truthy,
-                    TokenType::AND => left_truthy,
-                    _ => unreachable!(),
-                };
-                if eval_right {
-                    self.evaluate(right)?
+            Expression::Binary {
+                left,
+                operator,
+                right,
+            } => {
+                let left_child = self.evaluate(*left)?;
+                let right_child = self.evaluate(*right)?;
+
+                match operator.token_type {
+                    TokenType::Slash => {
+                        let (x, y) =
+                            self.check_number_operands(&operator, &left_child, &right_child)?;
+
+                        return Ok(Value::Number(x / y));
+                    }
+                    TokenType::Star => {
+                        let (x, y) =
+                            self.check_number_operands(&operator, &left_child, &right_child)?;
+
+                        return Ok(Value::Number(x * y));
+                    }
+                    TokenType::Minus => {
+                        let (x, y) =
+                            self.check_number_operands(&operator, &left_child, &right_child)?;
+
+                        return Ok(Value::Number(x - y));
+                    }
+                    TokenType::Plus => {
+                        if let (Value::Number(a), Value::Number(b)) = (&left_child, &right_child) {
+                            return Ok(Value::Number(*a + *b));
+                        }
+
+                        if let (Value::String(a), Value::String(b)) = (&left_child, &right_child) {
+                            let mut output: String = a.as_str().into();
+                            output.push_str(b);
+
+                            return Ok(Value::String(Rc::new(output)));
+                        }
+
+                        Err(InterpreterError {
+                            token: Some(operator.clone()),
+                            message: "Operands must be two numbers or two strings.".into(),
+                        })
+                    }
+                    TokenType::Greater => {
+                        let (x, y) =
+                            self.check_number_operands(&operator, &left_child, &right_child)?;
+
+                        return Ok(Value::Boolean(x > y));
+                    }
+                    TokenType::GreaterEqual => {
+                        let (x, y) =
+                            self.check_number_operands(&operator, &left_child, &right_child)?;
+
+                        return Ok(Value::Boolean(x >= y));
+                    }
+                    TokenType::Less => {
+                        let (x, y) =
+                            self.check_number_operands(&operator, &left_child, &right_child)?;
+
+                        return Ok(Value::Boolean(x < y));
+                    }
+                    TokenType::LessEqual => {
+                        let (x, y) =
+                            self.check_number_operands(&operator, &left_child, &right_child)?;
+
+                        return Ok(Value::Boolean(x <= y));
+                    }
+                    TokenType::BangEqual => Ok(Value::Boolean(left_child != right_child)),
+                    TokenType::EqualEqual => Ok(Value::Boolean(left_child == right_child)),
+                    _ => panic!("unreachable"),
+                }
+            }
+            Expression::Variable(name) => {
+                return self.environment.get(&name);
+            }
+            Expression::Assign { name, right } => {
+                let value = self.evaluate(*right)?;
+
+                self.environment.assign(&name, &value)?;
+
+                return Ok(value);
+            }
+            Expression::Logical {
+                left,
+                operator,
+                right,
+            } => {
+                let left_value = self.evaluate(*left)?;
+                let is_left_truthy = self.is_truthy(left_value.clone());
+
+                match operator.token_type {
+                    TokenType::Or => {
+                        if is_left_truthy {
+                            return Ok(left_value);
+                        }
+
+                        self.evaluate(*right)
+                    }
+                    TokenType::And => {
+                        if !is_left_truthy {
+                            return Ok(left_value);
+                        }
+
+                        self.evaluate(*right)
+                    }
+                    _ => panic!("unreachable"),
+                }
+            }
+            Expression::Call {
+                callee,
+                parenthesis,
+                arguments,
+            } => {
+                let callee_value = self.evaluate(*callee)?;
+
+                let mut arguments_values: Vec<Value> = Vec::new();
+                for argument in arguments {
+                    let argument_value = self.evaluate(argument)?;
+                    arguments_values.push(argument_value);
+                }
+
+                if let Value::Function(callable) = callee_value {
+                    let arity = callable.borrow().arity();
+                    if arguments_values.len() != arity {
+                        return Err(InterpreterError {
+                            token: Some(parenthesis.clone()),
+                            message: format!(
+                                "Expected {arity} arguments but got {}.",
+                                arguments_values.len()
+                            ),
+                        });
+                    }
+
+                    let returned_value =
+                        callable
+                            .borrow()
+                            .call(self, arguments_values, parenthesis)?;
+                    return Ok(returned_value.unwrap_or(Value::Nil));
                 } else {
-                    left
+                    Err(InterpreterError {
+                        token: Some(parenthesis.clone()),
+                        message: "Can only call functions and classes.".into(),
+                    })
                 }
             }
-            Expression::Unary { op, right } => {
-                let literal = self.evaluate(right)?;
-                match op.token_type {
-                    TokenType::BANG => match literal {
-                        Literal::Boolean(b) => Literal::Boolean(!b),
-                        Literal::Number(n) => Literal::Boolean(n == 0.0),
-                        Literal::String(s) => Literal::Boolean(s.is_empty()),
-                        Literal::Nil => Literal::Boolean(true),
-                    },
-                    TokenType::MINUS => match literal {
-                        Literal::Number(n) => Literal::Number(-n),
-                        _ => return Err("Operand must be a number."),
-                    },
-                    _ => unreachable!(),
-                }
-            }
-            Expression::Variable(var) => self.get_variable(var)?,
-        };
-        Ok(literal)
-    }
-
-    fn execute_block(&mut self, statements: &Vec<Statement>) -> Result<(), &'static str> {
-        self.environment.push();
-        for statement in statements.iter() {
-            self.execute(statement)?;
-        }
-        self.environment.pop();
-        Ok(())
-    }
-
-    fn get_variable(&self, var: &Token) -> Result<Literal, &'static str> {
-        let lexeme = &var.lexeme;
-        match self.environment.get(lexeme) {
-            Some(value) => Ok(value.clone()),
-            None => {
-                let msg = format!("Undefined variable '{}'.\n[line {}]", lexeme, var.line_num);
-                Err(Box::leak(msg.into_boxed_str()))
-            }
         }
     }
 
-    fn assign_variable(&mut self, var: &Token, value: &Literal) -> Result<(), &'static str> {
-        let lexeme = &var.lexeme;
-        if !self.environment.set(lexeme, value) {
-            let msg = format!("Undefined variable '{}'.\n[line {}]", lexeme, var.line_num);
-            return Err(Box::leak(msg.into_boxed_str()));
+    pub fn is_truthy(&self, value: Value) -> bool {
+        match value {
+            Value::Nil => false,
+            Value::Boolean(value) => value,
+            _ => true,
         }
-        Ok(())
     }
-}
 
-fn compare_number(op: &TokenType, l: f64, r: f64) -> bool {
-    match op {
-        TokenType::EQUAL_EQUAL => l == r,
-        TokenType::BANG_EQUAL => l != r,
-        TokenType::LESS => l < r,
-        TokenType::LESS_EQUAL => l <= r,
-        TokenType::GREATER => l > r,
-        TokenType::GREATER_EQUAL => l >= r,
-        _ => unreachable!(),
+    pub fn check_number_operand(
+        &self,
+        operator: &Token,
+        operand: &Value,
+    ) -> Result<f64, InterpreterError> {
+        match operand {
+            Value::Number(x) => Ok(*x),
+            _ => Err(InterpreterError {
+                token: Some(operator.clone()),
+                message: "Operand must be a number.".into(),
+            }),
+        }
+    }
+
+    pub fn check_number_operands(
+        &self,
+        operator: &Token,
+        left: &Value,
+        right: &Value,
+    ) -> Result<(f64, f64), InterpreterError> {
+        match (left, right) {
+            (Value::Number(x), Value::Number(y)) => Ok((*x, *y)),
+            _ => Err(InterpreterError {
+                token: Some(operator.clone()),
+                message: "Operands must be a number.".into(),
+            }),
+        }
     }
 }
